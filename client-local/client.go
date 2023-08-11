@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -27,84 +26,94 @@ type Result struct {
 	Data json.RawMessage `json:"data"`
 }
 
-func main() {
-	err := runCommands()
-	if err != nil {
-		fmt.Println("Error:", err)
-	}
+type Client struct {
+	ptmx1     *os.File
+	ptmx2     *os.File
+	ctx       context.Context
+	cancel    context.CancelFunc
+	origState *term.State
 }
 
-func runCommands() error {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+func (c *Client) Start(command string) error {
+	c.ctx, c.cancel = context.WithCancel(context.Background())
 
-	// needed to create socket
+	// needed to create osquery socket
 	cmd1 := exec.Command("osqueryi", "--nodisable_extensions")
-	ptmx1, err := startCommandWithPty(cmd1)
+	var err error
+	c.ptmx1, err = startCommandWithPty(cmd1)
 	if err != nil {
-		return err
-	}
-	defer ptmx1.Close()
-
-	// Create the command. Replace `other_script.go` with your Go script.
-	cmd2 := exec.Command("go", "run", "/home/sven/go/src/osquery-extension-stdio/server/extension.go", "--socket", "/home/sven/.osquery/shell.em")
-	ptmx2, err := startCommandWithPty(cmd2)
-	if err != nil {
-		return err
-	}
-	defer ptmx2.Close()
-
-	// Set stdin in raw mode.
-	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
-	if err != nil {
-		return err
-	}
-	defer term.Restore(int(os.Stdin.Fd()), oldState)
-
-	// Send multiple queries.
-	err = sendQuery(ptmx2, "select * from users limit 2")
-	if err != nil {
-		return err
+		return fmt.Errorf("failed to start cmd1: %v", err)
 	}
 
-	err = sendQuery(ptmx2, "select * from processes limit 3")
+	// Split the command string into command and arguments
+	cmdArgs := strings.Split(command, " ")
+	cmd2 := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+	c.ptmx2, err = startCommandWithPty(cmd2)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to start cmd2: %v", err)
 	}
 
-	err = sendQuery(ptmx2, ExitString)
+	// Set stdin in raw mode and store the original state.
+	c.origState, err = term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to set stdin in raw mode: %v", err)
+	}
+	return nil
+}
+
+func (c *Client) SendQuery(sql string) (*Result, error) {
+	query := &Query{SQL: sql}
+	encoder := json.NewEncoder(c.ptmx2)
+	if err := encoder.Encode(query); err != nil {
+		return nil, err
 	}
 
-	go func() {
-		<-ctx.Done()
-		os.Stdin.Close()
-	}()
+	_, err := c.ptmx2.Write([]byte("\n"))
+	if err != nil {
+		return nil, err
+	}
 
-	buf := new(bytes.Buffer)
-	multi := io.MultiWriter(os.Stdout, buf)
-
-	go func() { _, _ = io.Copy(ptmx2, os.Stdin) }()
-	_, _ = io.Copy(multi, ptmx2)
-
-	scanner := bufio.NewScanner(buf)
+	// Wait for the response
+	var response string
+	scanner := bufio.NewScanner(c.ptmx2)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.HasPrefix(line, "{\"data\"") {
-			continue
+		if strings.HasPrefix(line, "{\"data\"") {
+			response = line
+			break
 		}
+	}
 
-		// do something with the result
-		result := parseOsqueryResult(bytes.NewBufferString(line))
-		fmt.Println(string(result.Data))
+	// If we've received the desired response, ignore the I/O error
+	if response != "" {
+		return parseOsqueryResult(strings.NewReader(response)), nil
 	}
 
 	if err := scanner.Err(); err != nil {
-		fmt.Println("Error scanning buffer:", err)
+		// Check if the error is due to the osquery extension closing the connection
+		if strings.Contains(err.Error(), "input/output error") {
+			// Ignore the error and return nil
+			return nil, nil
+		}
+		return nil, fmt.Errorf("error reading response: %v", err)
 	}
 
-	return nil
+	return nil, fmt.Errorf("no valid response received")
+}
+
+func (c *Client) Stop() {
+	if c.cancel != nil {
+		c.cancel()
+	}
+	if c.ptmx1 != nil {
+		c.ptmx1.Close()
+	}
+	if c.ptmx2 != nil {
+		c.ptmx2.Close()
+	}
+	if c.origState != nil {
+		term.Restore(int(os.Stdin.Fd()), c.origState)
+	}
 }
 
 func parseOsqueryResult(r io.Reader) *Result {
@@ -125,15 +134,4 @@ func startCommandWithPty(cmd *exec.Cmd) (*os.File, error) {
 	}
 
 	return ptmx, nil
-}
-
-func sendQuery(w io.Writer, sql string) error {
-	query := &Query{SQL: sql}
-	encoder := json.NewEncoder(w)
-	if err := encoder.Encode(query); err != nil {
-		return err
-	}
-
-	_, err := w.Write([]byte("\n"))
-	return err
 }

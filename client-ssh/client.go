@@ -19,7 +19,7 @@ func main() {
 	command := "cd /home/sven/go/src/osquery-extension-stdio/server && go run extension.go --socket /home/sven/.osquery/shell.em"
 	queries := []string{
 		"{\"query\":\"select * from users limit 2\"}\n",
-		"{\"query\":\"select * from processes limit 3\"}\n",
+		"{\"query\":\"select * from processles limit 3\"}\n",
 		"{\"query\":\"select * from users limit 1\"}\n",
 		"{\"query\":\"select * from users limit 1\"}\n",
 		"{\"query\":\"select * from users limit 1\"}\n",
