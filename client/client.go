@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/creack/pty"
-	"golang.org/x/term"
 )
 
 const (
@@ -27,14 +26,15 @@ type Result struct {
 }
 
 type Client struct {
-	ptmx1     *os.File
-	ptmx2     *os.File
-	ctx       context.Context
-	cancel    context.CancelFunc
-	origState *term.State
+	ptmx0  *os.File
+	ptmx1  *os.File
+	ptmx2  *os.File
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 func (c *Client) Start(command string) error {
+
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 
 	// needed to create osquery socket
@@ -53,11 +53,6 @@ func (c *Client) Start(command string) error {
 		return fmt.Errorf("failed to start cmd2: %v", err)
 	}
 
-	// Set stdin in raw mode and store the original state.
-	c.origState, err = term.MakeRaw(int(os.Stdin.Fd()))
-	if err != nil {
-		return fmt.Errorf("failed to set stdin in raw mode: %v", err)
-	}
 	return nil
 }
 
@@ -84,18 +79,13 @@ func (c *Client) SendQuery(sql string) (*Result, error) {
 		}
 	}
 
-	// If we've received the desired response, ignore the I/O error
-	if response != "" {
-		return parseOsqueryResult(strings.NewReader(response)), nil
+	if err := scanner.Err(); err != nil {
+		// Log the error but don't immediately return if you have a valid response
+		fmt.Println("Scanner error:", err)
 	}
 
-	if err := scanner.Err(); err != nil {
-		// Check if the error is due to the osquery extension closing the connection
-		if strings.Contains(err.Error(), "input/output error") {
-			// Ignore the error and return nil
-			return nil, nil
-		}
-		return nil, fmt.Errorf("error reading response: %v", err)
+	if response != "" {
+		return parseOsqueryResult(strings.NewReader(response)), nil
 	}
 
 	return nil, fmt.Errorf("no valid response received")
@@ -110,9 +100,6 @@ func (c *Client) Stop() {
 	}
 	if c.ptmx2 != nil {
 		c.ptmx2.Close()
-	}
-	if c.origState != nil {
-		term.Restore(int(os.Stdin.Fd()), c.origState)
 	}
 }
 

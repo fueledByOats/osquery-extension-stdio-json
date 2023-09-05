@@ -19,7 +19,7 @@ type Query struct {
 }
 
 type Result struct {
-	Data interface{} `json:"data"` // Change type to interface{}
+	Data interface{} `json:"data"`
 }
 
 func main() {
