@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"time"
+	"flag"
 
 	"github.com/osquery/osquery-go"
 )
@@ -22,8 +23,17 @@ type Result struct {
 	Data interface{} `json:"data"`
 }
 
+var (
+	socket   = flag.String("socket", "", "Path to the extensions UNIX domain socket")
+)
+
 func main() {
-	client, err := osquery.NewClient("/home/sven/.osquery/shell.em", 10*time.Second)
+	flag.Parse()
+	if *socket == "" {
+		log.Fatalln("Missing required --socket argument")
+	}
+
+	client, err := osquery.NewClient(*socket, 10*time.Second)
 	if err != nil {
 		log.Fatalf("Error creating extension: %s\n", err)
 	}
@@ -49,7 +59,7 @@ func main() {
 			log.Fatalf("Error communicating with osqueryi: %v", err)
 		}
 		if resp.Status.Code != 0 {
-			log.Fatalf("osqueryi returned error: %s", resp.Status.Message)
+			log.Printf("osqueryi returned error: %s", resp.Status.Message)
 		}
 
 		err = parseAndSendResult(resp.Response)
@@ -63,32 +73,16 @@ func decodeQuery() (*Query, error) {
 	decoder := json.NewDecoder(os.Stdin)
 	query := &Query{}
 	err := decoder.Decode(query)
-	if err != nil {
-		return nil, err
-	}
-	return query, nil
+
+	return query, err
 }
 
 func parseAndSendResult(respData interface{}) error {
-	var jsonData interface{}
-
-	// Convert respData to JSON
-	dataBytes, err := json.Marshal(respData)
-	if err != nil {
-		return err
-	}
-
-	// Unmarshal into interface{}
-	err = json.Unmarshal(dataBytes, &jsonData)
-	if err != nil {
-		return err
-	}
-
 	// Create Result with JSON data
 	result := &Result{
-		Data: jsonData,
+		Data: respData,
 	}
-
+ 
 	// Send Result as JSON
 	return json.NewEncoder(os.Stdout).Encode(result)
 }
