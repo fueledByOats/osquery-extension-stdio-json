@@ -1,15 +1,14 @@
 package main
 
 import (
-	"log"
-	"flag"
 	"context"
 	"errors"
+	"flag"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
-	"io/ioutil"
 
 	"github.com/osquery/osquery-go"
 	"github.com/osquery/osquery-go/plugin/table"
@@ -26,11 +25,28 @@ var (
 	interval = flag.Int("interval", 3, "Seconds delay between connectivity checks")
 )
 
+var (
+	ErrFileNotFound = errors.New("file does not exist")
+)
+
+var logger *log.Logger
+
 func main() {
+	f, err := os.OpenFile("/tmp/osquery_file_read_extension.log", os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Println(err)
+	}
+	defer f.Close()
+
+	logger = log.New(f, "osquery.file_read", log.LstdFlags)
+
 	flag.Parse()
 	if *socket == "" {
-		log.Fatalln("Missing required --socket argument")
+		logger.Fatalln("Missing required --socket argument")
 	}
+
+	logger.Println(*socket)
+
 	serverTimeout := osquery.ServerTimeout(
 		time.Second * time.Duration(*timeout),
 	)
@@ -46,11 +62,11 @@ func main() {
 	)
 
 	if err != nil {
-		log.Fatalf("Error creating extension: %s\n", err)
+		logger.Fatalf("Error creating extension: %s\n", err)
 	}
 	server.RegisterPlugin(table.NewPlugin("file_content", FileContentColumns(), FileContentGenerate))
 	if err := server.Run(); err != nil {
-		log.Fatal(err)
+		logger.Fatal(err)
 	}
 }
 
@@ -97,26 +113,19 @@ func FileContentGenerate(ctx context.Context, queryContext table.QueryContext) (
 	return results, nil
 }
 
-func processFile(path string, wildcard bool) ([]FileContent, error) {
-	var output []FileContent
+func processFile(path string, wildcard bool) (output []FileContent, err error) {
+	var files = []string{path}
 
 	if wildcard {
 		replacedPath := strings.ReplaceAll(path, "%", "*")
-
-		files, err := filepath.Glob(replacedPath)
-		if err != nil {
+		if files, err = filepath.Glob(replacedPath); err != nil {
 			return nil, err
 		}
-		for _, file := range files {
-			content, err := readFileContent(file)
-			if err != nil {
-				return nil, err
-			}
-			output = append(output, content)
-		}
-	} else {
-		content, err := readFileContent(path)
-		if err != nil {
+	}
+
+	for _, file := range files {
+		var content FileContent
+		if content, err = readFileContent(file); err != nil {
 			return nil, err
 		}
 		output = append(output, content)
@@ -127,11 +136,10 @@ func processFile(path string, wildcard bool) ([]FileContent, error) {
 
 func readFileContent(path string) (FileContent, error) {
 	if !fileExists(path) {
-		err := errors.New("File does not exist")
-		return FileContent{}, err
+		return FileContent{}, ErrFileNotFound
 	}
 
-	contentBytes, err := ioutil.ReadFile(path)
+	contentBytes, err := os.ReadFile(path)
 	if err != nil {
 		return FileContent{}, err
 	}
